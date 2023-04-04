@@ -8,6 +8,7 @@ import transformers
 from gptq import * 
 from modelutils import *
 from quant import *
+from transformers import AutoTokenizer
 
 
 def get_bloom(model):
@@ -256,22 +257,59 @@ if __name__ == '__main__':
 
     model = get_bloom(args.model)
     model.eval()
+    # print(model)
 
     dataloader, testloader = get_loaders(
         args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen
     )
-
+    print(model.transformer.h[0].self_attention.query_key_value.weight.dtype, 
+        model.transformer.h[0].self_attention.query_key_value.weight.shape)
     if args.wbits < 16 and not args.nearest:
         tick = time.time()
         bloom_sequential(model, dataloader, DEV)
         print(time.time() - tick)
 
-    datasets = ['wikitext2', 'ptb', 'c4'] 
-    if args.new_eval:
-      datasets = ['wikitext2', 'ptb-new', 'c4-new']
-    for dataset in datasets: 
-        dataloader, testloader = get_loaders(
-            dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
-        )
-        print(dataset)
-        bloom_eval(model, testloader, DEV)
+    # datasets = ['wikitext2', 'ptb', 'c4'] 
+    # if args.new_eval:
+    #   datasets = ['wikitext2', 'ptb-new', 'c4-new']
+    # for dataset in datasets: 
+    #     dataloader, testloader = get_loaders(
+    #         dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
+    #     )
+    #     print(dataset)
+    #     bloom_eval(model, testloader, DEV)
+    model = model.to(torch.cuda.current_device())
+    num_tokens = 100
+    sample_input = "hello, my dog is cute."
+    generate_kwargs = dict(max_new_tokens = num_tokens, do_sample = False, use_cache=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # print(model)
+    batch_size = 64
+    input_len = 10
+    print(model.transformer.h[0].self_attention.query_key_value.weight.dtype, 
+        model.transformer.h[0].self_attention.query_key_value.weight.shape)
+
+    for j in range(3):
+        inputs_token_10  = []
+        t2 = time.time()
+
+        for i in range(batch_size):
+            inputs_token_10.append(sample_input)
+        input_tokens = tokenizer.batch_encode_plus(inputs_token_10, return_tensors="pt", padding=True,  max_length=16)
+        torch.cuda.synchronize()
+        for k in input_tokens:
+            if torch.is_tensor(input_tokens[k]):
+                input_tokens[k] = input_tokens[k].to(torch.cuda.current_device())
+        torch.cuda.reset_peak_memory_stats()
+        t3 = time.time()
+        cycles = 5 
+        for d in range(cycles):
+            with torch.no_grad():
+                outputs = model.generate(**input_tokens, **generate_kwargs)
+        t4 = time.time()
+        outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        t5 = time.time()
+        print("torch max memory: ", torch.cuda.max_memory_allocated())
+        print("batch size: ", len(inputs_token_10), " input len: ", input_len, " output len: ", num_tokens, 
+            " intput time: ",  t3 - t2, " generate time: ", (t4 - t3)/cycles, " batch decode: ", t5 - t4)
+
